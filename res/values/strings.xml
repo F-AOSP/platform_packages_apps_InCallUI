@@ -464,4 +464,11 @@
     <!-- Used to inform the user that the note associated with an outgoing call has been sent.
          [CHAR LIMIT=32] -->
     <string name="note_sent">Note sent</string>
+
+    <!-- Title for Select Account Dialog [CHAR LIMIT=30] -->
+    <string name="select_account_dialog_title">Select Account</string>
+    <!-- Set Subscription screen: label sub 1 -->
+    <string name="sub_1">SUB 1</string>
+    <!-- Set Subscription screen: label sub 2 -->
+    <string name="sub_2">SUB 2</string>
 </resources>
