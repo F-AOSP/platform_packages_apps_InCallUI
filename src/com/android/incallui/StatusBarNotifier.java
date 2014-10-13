@@ -32,6 +32,9 @@ import android.telecom.PhoneAccount;
 import android.telecom.TelecomManager;
 import android.text.BidiFormatter;
 import android.text.TextDirectionHeuristics;
+import android.telephony.SubscriptionInfo;
+import android.telephony.SubscriptionManager;
+import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 
 import com.android.contacts.common.util.BitmapUtil;
@@ -213,8 +216,17 @@ public class StatusBarNotifier implements InCallPresenter.InCallStateListener,
         // Check if data has changed; if nothing is different, don't issue another notification.
         final int iconResId = getIconToDisplay(call);
         Bitmap largeIcon = getLargeIconToDisplay(contactInfo, call);
-        final String content = getContentString(call);
+        String content = getContentString(call);
         final String contentTitle = getContentTitle(contactInfo, call);
+
+        // set the content
+        if (TelephonyManager.getDefault().isMultiSimEnabled()) {
+            SubscriptionInfo info =
+                    SubscriptionManager.from(mContext).getActiveSubscriptionInfo(call.getSubId());
+            if (info != null) {
+                content += " (" + info.getDisplayName() + ")";
+            }
+        }
 
         final int notificationType;
         if ((state == Call.State.INCOMING
