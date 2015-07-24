@@ -25,7 +25,6 @@ import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.telecom.DisconnectCause;
-import android.telecom.PhoneCapabilities;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
 import android.telecom.StatusHints;
@@ -34,7 +33,6 @@ import android.telecom.VideoProfile;
 import android.telephony.PhoneNumberUtils;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
-import android.text.format.DateUtils;
 
 import com.android.incallui.ContactInfoCache.ContactCacheEntry;
 import com.android.incallui.ContactInfoCache.ContactInfoCacheCallback;
@@ -67,7 +65,6 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
     private ContactCacheEntry mSecondaryContactInfo;
     private CallTimer mCallTimer;
     private Context mContext;
-    private TelecomManager mTelecomManager;
 
     public static class ContactLookupCallback implements ContactInfoCacheCallback {
         private final WeakReference<CallCardPresenter> mCallCardPresenter;
@@ -228,7 +225,7 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
         } else {
             Log.d(this, "Canceling the calltime timer");
             mCallTimer.cancel();
-            ui.setPrimaryCallElapsedTime(false, null);
+            ui.setPrimaryCallElapsedTime(false, 0);
         }
 
         // Set the call state
@@ -282,8 +279,10 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
     public void onDetailsChanged(Call call, android.telecom.Call.Details details) {
         updatePrimaryCallState();
 
-        if (call.can(PhoneCapabilities.MANAGE_CONFERENCE) != PhoneCapabilities.can(
-                details.getCallCapabilities(), PhoneCapabilities.MANAGE_CONFERENCE)) {
+        if (call.can(android.telecom.Call.Details.CAPABILITY_MANAGE_CONFERENCE) !=
+                android.telecom.Call.Details.can(
+                        details.getCallCapabilities(),
+                        android.telecom.Call.Details.CAPABILITY_MANAGE_CONFERENCE)) {
             maybeShowManageConferenceCallButton();
         }
     }
@@ -294,8 +293,7 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
         // number directly from the telephony layer).
         PhoneAccountHandle accountHandle = mPrimary.getAccountHandle();
         if (accountHandle != null) {
-            TelecomManager mgr =
-                    (TelecomManager) mContext.getSystemService(Context.TELECOM_SERVICE);
+            TelecomManager mgr = InCallPresenter.getInstance().getTelecomManager();
             PhoneAccount account = mgr.getPhoneAccount(accountHandle);
             if (account != null) {
                 return getNumberFromHandle(account.getSubscriptionAddress());
@@ -336,7 +334,8 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
             return false;
         }
 
-        return mPrimary.can(PhoneCapabilities.MANAGE_CONFERENCE) && !mPrimary.isVideoCall(mContext);
+        return mPrimary.can(android.telecom.Call.Details.CAPABILITY_MANAGE_CONFERENCE) &&
+                !mPrimary.isVideoCall(mContext);
     }
 
     private void setCallbackNumber() {
@@ -356,9 +355,8 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
             }
         }
 
-        TelephonyManager telephonyManager =
-                (TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE);
-        String simNumber = telephonyManager.getLine1Number();
+        TelecomManager mgr = InCallPresenter.getInstance().getTelecomManager();
+        String simNumber = mgr.getLine1Number(mPrimary.getAccountHandle());
         if (PhoneNumberUtils.compare(callbackNumber, simNumber)) {
             Log.d(this, "Numbers are the same; not showing the callback number");
             callbackNumber = null;
@@ -372,13 +370,13 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
 
         if (ui == null || mPrimary == null || mPrimary.getState() != Call.State.ACTIVE) {
             if (ui != null) {
-                ui.setPrimaryCallElapsedTime(false, null);
+                ui.setPrimaryCallElapsedTime(false, 0);
             }
             mCallTimer.cancel();
         } else {
             final long callStart = mPrimary.getConnectTimeMillis();
             final long duration = System.currentTimeMillis() - callStart;
-            ui.setPrimaryCallElapsedTime(true, DateUtils.formatElapsedTime(duration / 1000));
+            ui.setPrimaryCallElapsedTime(true, duration);
         }
     }
 
@@ -541,7 +539,7 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
 
         if (mSecondary == null) {
             // Clear the secondary display info.
-            ui.setSecondary(false, null, false, null, null, null, false /* isConference */);
+            ui.setSecondary(false, null, false, null, null, false /* isConference */);
             return;
         }
 
@@ -552,7 +550,6 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
                     false /* nameIsNumber */,
                     null /* label */,
                     getCallProviderLabel(mSecondary),
-                    getCallProviderIcon(mSecondary),
                     true /* isConference */);
         } else if (mSecondaryContactInfo != null) {
             Log.d(TAG, "updateSecondaryDisplayInfo() " + mSecondaryContactInfo);
@@ -564,11 +561,10 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
                     nameIsNumber,
                     mSecondaryContactInfo.label,
                     getCallProviderLabel(mSecondary),
-                    getCallProviderIcon(mSecondary),
                     false /* isConference */);
         } else {
             // Clear the secondary display info.
-            ui.setSecondary(false, null, false, null, null, null, false /* isConference */);
+            ui.setSecondary(false, null, false, null, null, false /* isConference */);
         }
     }
 
@@ -581,7 +577,7 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
         if (accountHandle == null) {
             return null;
         }
-        return getTelecomManager().getPhoneAccount(accountHandle);
+        return InCallPresenter.getInstance().getTelecomManager().getPhoneAccount(accountHandle);
     }
 
     /**
@@ -595,30 +591,13 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
     }
 
     /**
-     * Return the Drawable object of the icon to display to the left of the connection label.
-     */
-    private Drawable getCallProviderIcon(Call call) {
-        PhoneAccount account = getAccountForCall(call);
-
-        // on MSIM devices irrespective of number of enabled phone
-        // accounts pick icon from phone account and display on UI
-        if (account != null && (getTelecomManager().hasMultipleCallCapableAccounts()
-                || (CallList.PHONE_COUNT > 1))) {
-            return account.createIconDrawable(mContext);
-        }
-        return null;
-    }
-
-    /**
      * Return the string label to represent the call provider
      */
     private String getCallProviderLabel(Call call) {
         PhoneAccount account = getAccountForCall(call);
-
-        // on MSIM devices irrespective of number of
-        // enabled phone accounts display label info on UI
-        if (account != null && (getTelecomManager().hasMultipleCallCapableAccounts()
-                || (CallList.PHONE_COUNT > 1))) {
+        TelecomManager mgr = InCallPresenter.getInstance().getTelecomManager();
+        if (account != null && !TextUtils.isEmpty(account.getLabel())
+                && mgr.hasMultipleCallCapableAccounts()) {
             return account.getLabel().toString();
         }
         return null;
@@ -706,7 +685,7 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
 
     public void secondaryInfoClicked() {
         if (mSecondary == null) {
-            Log.wtf(this, "Secondary info clicked but no secondary call.");
+            Log.w(this, "Secondary info clicked but no secondary call.");
             return;
         }
 
@@ -743,16 +722,9 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
         ui.setCallCardVisible(!isFullScreenVideo);
     }
 
-    private TelecomManager getTelecomManager() {
-        if (mTelecomManager == null) {
-            mTelecomManager =
-                    (TelecomManager) mContext.getSystemService(Context.TELECOM_SERVICE);
-        }
-        return mTelecomManager;
-    }
-
     private String getConferenceString(Call call) {
-        boolean isGenericConference = call.can(PhoneCapabilities.GENERIC_CONFERENCE);
+        boolean isGenericConference = call.can(
+                android.telecom.Call.Details.CAPABILITY_GENERIC_CONFERENCE);
         Log.v(this, "getConferenceString: " + isGenericConference);
 
         final int resId = isGenericConference
@@ -761,7 +733,8 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
     }
 
     private Drawable getConferencePhoto(Call call) {
-        boolean isGenericConference = call.can(PhoneCapabilities.GENERIC_CONFERENCE);
+        boolean isGenericConference = call.can(
+                android.telecom.Call.Details.CAPABILITY_GENERIC_CONFERENCE);
         Log.v(this, "getConferencePhoto: " + isGenericConference);
 
         final int resId = isGenericConference
@@ -777,11 +750,11 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
         void setPrimary(String number, String name, boolean nameIsNumber, String label,
                 Drawable photo, boolean isSipCall);
         void setSecondary(boolean show, String name, boolean nameIsNumber, String label,
-                String providerLabel, Drawable providerIcon, boolean isConference);
+                String providerLabel, boolean isConference);
         void setCallState(int state, int videoState, int sessionModificationState,
                 DisconnectCause disconnectCause, String connectionLabel,
                 Drawable connectionIcon, String gatewayNumber);
-        void setPrimaryCallElapsedTime(boolean show, String duration);
+        void setPrimaryCallElapsedTime(boolean show, long duration);
         void setPrimaryName(String name, boolean nameIsNumber);
         void setPrimaryImage(Drawable image);
         void setPrimaryPhoneNumber(String phoneNumber);

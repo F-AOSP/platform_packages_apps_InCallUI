@@ -15,16 +15,8 @@
   ~ See the License for the specific language governing permissions and
   ~ limitations under the License
   -->
-
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-
-    <item android:id="@+id/backgroundItem"
-          android:drawable="@drawable/btn_background" />
-
-    <item>
-        <bitmap android:src="@drawable/ic_toolbar_merge"
-            android:gravity="center"
-            android:tint="@color/selectable_icon_tint" />
-    </item>
-
-</layer-list>
+<View xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/outgoing_call_animation_circle"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/incall_background_color" />
