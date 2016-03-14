@@ -32,6 +32,10 @@ import android.telecom.PhoneAccount;
 import android.telecom.TelecomManager;
 import android.text.BidiFormatter;
 import android.text.TextDirectionHeuristics;
+import android.telecom.VideoProfile;
+import android.telephony.SubscriptionInfo;
+import android.telephony.SubscriptionManager;
+import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 
 import com.android.contacts.common.util.BitmapUtil;
@@ -56,6 +60,8 @@ public class StatusBarNotifier implements InCallPresenter.InCallStateListener,
     private static final int NOTIFICATION_IN_CALL = 1;
     // Notification for incoming calls. This is interruptive and will show up as a HUN.
     private static final int NOTIFICATION_INCOMING_CALL = 2;
+    //If voice privacy is on this property will be added to the call associated with the connection.
+    private static final int CAPABILITY_VOICE_PRIVACY = 0x00400000;
 
     private final Context mContext;
     private final ContactInfoCache mContactInfoCache;
@@ -213,12 +219,14 @@ public class StatusBarNotifier implements InCallPresenter.InCallStateListener,
         // Check if data has changed; if nothing is different, don't issue another notification.
         final int iconResId = getIconToDisplay(call);
         Bitmap largeIcon = getLargeIconToDisplay(contactInfo, call);
-        final String content = getContentString(call);
+        String content = getContentString(call);
         final String contentTitle = getContentTitle(contactInfo, call);
 
+        final boolean isVideoUpgradeRequest = call.getSessionModificationState()
+                == Call.SessionModificationState.RECEIVED_UPGRADE_TO_VIDEO_REQUEST;
         final int notificationType;
         if ((state == Call.State.INCOMING
-                || state == Call.State.CALL_WAITING) &&
+                || state == Call.State.CALL_WAITING || isVideoUpgradeRequest) &&
                         !InCallPresenter.getInstance().isShowingInCallUi()) {
             notificationType = NOTIFICATION_INCOMING_CALL;
         } else {
@@ -234,6 +242,14 @@ public class StatusBarNotifier implements InCallPresenter.InCallStateListener,
             largeIcon = getRoundedIcon(largeIcon);
         }
 
+        // set the content
+        if (TelephonyManager.getDefault().isMultiSimEnabled()) {
+            SubscriptionInfo info =
+                    SubscriptionManager.from(mContext).getActiveSubscriptionInfo(call.getSubId());
+            if (info != null) {
+                content += " (" + info.getDisplayName() + ")";
+            }
+        }
         /*
          * Nothing more to check...build and send it.
          */
@@ -243,7 +259,8 @@ public class StatusBarNotifier implements InCallPresenter.InCallStateListener,
         final PendingIntent inCallPendingIntent = createLaunchPendingIntent();
         builder.setContentIntent(inCallPendingIntent);
 
-        // Set the intent as a full screen intent as well if a call is incoming
+        // Set the intent as a full screen intent as well if a call is incoming or for a
+        // video upgrade request
         if (notificationType == NOTIFICATION_INCOMING_CALL) {
             configureFullScreenIntent(builder, inCallPendingIntent, call);
             // Set the notification category for incoming calls
@@ -257,8 +274,6 @@ public class StatusBarNotifier implements InCallPresenter.InCallStateListener,
         builder.setLargeIcon(largeIcon);
         builder.setColor(mContext.getResources().getColor(R.color.dialer_theme_color));
 
-        final boolean isVideoUpgradeRequest = call.getSessionModificationState()
-                == Call.SessionModificationState.RECEIVED_UPGRADE_TO_VIDEO_REQUEST;
         if (isVideoUpgradeRequest) {
             builder.setUsesChronometer(false);
             addDismissUpgradeRequestAction(builder);
@@ -358,9 +373,15 @@ public class StatusBarNotifier implements InCallPresenter.InCallStateListener,
             return mContext.getResources().getString(R.string.card_title_conf_call);
         }
         if (TextUtils.isEmpty(contactInfo.name)) {
-            return TextUtils.isEmpty(contactInfo.number) ? null
+            String contactNumberDisplayed = TextUtils.isEmpty(contactInfo.number) ?
+                "" : contactInfo.number.toString();
+            if (mContext.getResources().
+                getBoolean(R.bool.display_home_location_on_statusbar)) {
+                    contactNumberDisplayed =  contactNumberDisplayed + " " + contactInfo.location;
+            }
+            return TextUtils.isEmpty(contactNumberDisplayed) ? null
                     : BidiFormatter.getInstance().unicodeWrap(
-                            contactInfo.number.toString(), TextDirectionHeuristics.LTR);
+                            contactNumberDisplayed, TextDirectionHeuristics.LTR);
         }
 
         return contactInfo.name;
@@ -414,13 +435,25 @@ public class StatusBarNotifier implements InCallPresenter.InCallStateListener,
         // different calls.  So if both lines are in use, display info
         // from the foreground call.  And if there's a ringing call,
         // display that regardless of the state of the other calls.
+        int resId;
+        boolean supportsVoicePrivacy = call.can(CAPABILITY_VOICE_PRIVACY);
         if (call.getState() == Call.State.ONHOLD) {
-            return R.drawable.ic_phone_paused_white_24dp;
+            if (supportsVoicePrivacy) {
+                resId = R.drawable.stat_sys_vp_phone_call_on_hold;
+            } else {
+                resId =  R.drawable.ic_phone_paused_white_24dp;
+            }
         } else if (call.getSessionModificationState()
                 == Call.SessionModificationState.RECEIVED_UPGRADE_TO_VIDEO_REQUEST) {
-            return R.drawable.ic_videocam;
+            resId =  R.drawable.ic_videocam;
+        } else {
+            if (supportsVoicePrivacy) {
+                resId =  R.drawable.stat_sys_vp_phone_call;
+            } else {
+                resId =  R.drawable.ic_call_white_24dp;
+            }
         }
-        return R.drawable.ic_call_white_24dp;
+        return resId;
     }
 
     /**
@@ -588,12 +621,18 @@ public class StatusBarNotifier implements InCallPresenter.InCallStateListener,
         // If a call is onhold during an incoming call, the call actually comes in as
         // INCOMING.  For that case *and* traditional call-waiting, we want to
         // cancel the notification.
+
+        // For DSDA, we want to cancel the notification if we get an incoming call on
+        // one sub and there is a live call on another sub.
+        CallList callList = CallList.getInstance();
         boolean isCallWaiting = (call.getState() == Call.State.CALL_WAITING ||
                 (call.getState() == Call.State.INCOMING &&
-                        CallList.getInstance().getBackgroundCall() != null));
+                (callList.getBackgroundCall() != null ||
+                callList.isAnyOtherSubActive(callList.getActiveSubId()))));
 
         if (isCallWaiting) {
-            Log.i(this, "updateInCallNotification: call-waiting! force relaunch...");
+            Log.i(this, "configureFullScreenIntent: call-waiting or dsda incoming call!"
+                    + " force relaunch. Active sub:" + callList.getActiveSubId());
             // Cancel the IN_CALL_NOTIFICATION immediately before
             // (re)posting it; this seems to force the
             // NotificationManager to launch the fullScreenIntent.

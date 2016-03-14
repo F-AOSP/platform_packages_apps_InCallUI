@@ -166,6 +166,11 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
     private boolean mCallStateLabelResetPending = false;
     private Handler mHandler;
 
+    /**
+     * Determines if secondary call info is populated in the secondary call info UI.
+     */
+    private boolean mHasSecondaryCallInfo = false;
+
     @Override
     public CallCardPresenter.CallCardUi getUi() {
         return this;
@@ -316,6 +321,7 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
      */
     @Override
     public void setCallCardVisible(final boolean visible) {
+        Log.v(this, "setCallCardVisible : isVisible = " + visible);
         // When animating the hide/show of the views in a landscape layout, we need to take into
         // account whether we are in a left-to-right locale or a right-to-left locale and adjust
         // the animations accordingly.
@@ -330,6 +336,7 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
         // Determine how much space there is below or to the side of the call card.
         final float spaceBesideCallCard = getSpaceBesideCallCard();
 
+        doActionOnPredraw(visible, isLayoutRtl, videoView, spaceBesideCallCard);
         // We need to translate the video surface, but we need to know its position after the layout
         // has occurred so use a {@code ViewTreeObserver}.
         final ViewTreeObserver observer = getView().getViewTreeObserver();
@@ -337,76 +344,78 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
             @Override
             public boolean onPreDraw() {
                 // We don't want to continue getting called.
-                if (observer.isAlive()) {
-                    observer.removeOnPreDrawListener(this);
-                }
-
-                float videoViewTranslation = 0f;
-
-                // Translate the call card to its pre-animation state.
-                if (!mIsLandscape) {
-                    mPrimaryCallCardContainer.setTranslationY(visible ?
-                            -mPrimaryCallCardContainer.getHeight() : 0);
-
-                    if (visible) {
-                        videoViewTranslation = videoView.getHeight() / 2 - spaceBesideCallCard / 2;
-                    }
-                }
-
-                // Perform animation of video view.
-                ViewPropertyAnimator videoViewAnimator = videoView.animate()
-                        .setInterpolator(AnimUtils.EASE_OUT_EASE_IN)
-                        .setDuration(mVideoAnimationDuration);
-                if (mIsLandscape) {
-                    videoViewAnimator
-                            .translationX(videoViewTranslation)
-                            .start();
-                } else {
-                    videoViewAnimator
-                            .translationY(videoViewTranslation)
-                            .start();
-                }
-                videoViewAnimator.start();
-
-                // Animate the call card sliding.
-                ViewPropertyAnimator callCardAnimator = mPrimaryCallCardContainer.animate()
-                        .setInterpolator(AnimUtils.EASE_OUT_EASE_IN)
-                        .setDuration(mVideoAnimationDuration)
-                        .setListener(new AnimatorListenerAdapter() {
-                            @Override
-                            public void onAnimationEnd(Animator animation) {
-                                super.onAnimationEnd(animation);
-                                if (!visible) {
-                                    mPrimaryCallCardContainer.setVisibility(View.GONE);
-                                }
-                            }
-
-                            @Override
-                            public void onAnimationStart(Animator animation) {
-                                super.onAnimationStart(animation);
-                                if (visible) {
-                                    mPrimaryCallCardContainer.setVisibility(View.VISIBLE);
-                                }
-                            }
-                        });
-
-                if (mIsLandscape) {
-                    float translationX = mPrimaryCallCardContainer.getWidth();
-                    translationX *= isLayoutRtl ? 1 : -1;
-                    callCardAnimator
-                            .translationX(visible ? 0 : translationX)
-                            .start();
-                } else {
-                    callCardAnimator
-                            .translationY(visible ? 0 : -mPrimaryCallCardContainer.getHeight())
-                            .start();
-                }
-
+                getView().getViewTreeObserver().removeOnPreDrawListener(this);
+                doActionOnPredraw(visible, isLayoutRtl, videoView, spaceBesideCallCard);
                 return true;
             }
         });
     }
 
+    private void doActionOnPredraw(final boolean visible, final boolean isLayoutRtl,
+            final View videoView, final float spaceBesideCallCard) {
+
+        float videoViewTranslation = 0f;
+
+        // Translate the call card to its pre-animation state.
+        if (!mIsLandscape) {
+            mPrimaryCallCardContainer.setTranslationY(visible ?
+                    -mPrimaryCallCardContainer.getHeight() : 0);
+
+            if (visible) {
+                videoViewTranslation = videoView.getHeight() / 2 - spaceBesideCallCard / 2;
+            }
+        }
+
+        // Perform animation of video view.
+        ViewPropertyAnimator videoViewAnimator = videoView.animate()
+                .setInterpolator(AnimUtils.EASE_OUT_EASE_IN)
+                .setDuration(mVideoAnimationDuration);
+        if (mIsLandscape) {
+            videoViewAnimator
+                    .translationX(videoViewTranslation)
+                    .start();
+        } else {
+            videoViewAnimator
+                    .translationY(videoViewTranslation)
+                    .start();
+        }
+        videoViewAnimator.start();
+
+        // Animate the call card sliding.
+        ViewPropertyAnimator callCardAnimator = mPrimaryCallCardContainer.animate()
+                .setInterpolator(AnimUtils.EASE_OUT_EASE_IN)
+                .setDuration(mVideoAnimationDuration)
+                .setListener(new AnimatorListenerAdapter() {
+                    @Override
+                    public void onAnimationEnd(Animator animation) {
+                        super.onAnimationEnd(animation);
+                        if (!visible) {
+                            mPrimaryCallCardContainer.setVisibility(View.GONE);
+                        }
+                    }
+
+                    @Override
+                    public void onAnimationStart(Animator animation) {
+                        super.onAnimationStart(animation);
+                        if (visible) {
+                            mPrimaryCallCardContainer.setVisibility(View.VISIBLE);
+                        }
+                    }
+                });
+
+        if (mIsLandscape) {
+            float translationX = mPrimaryCallCardContainer.getWidth();
+            translationX *= isLayoutRtl ? 1 : -1;
+            callCardAnimator
+                    .translationX(visible ? 0 : translationX)
+                    .start();
+        } else {
+            callCardAnimator
+                    .translationY(visible ? 0 : -mPrimaryCallCardContainer.getHeight())
+                    .start();
+        }
+
+    }
     /**
      * Determines the amount of space below the call card for portrait layouts), or beside the
      * call card for landscape layouts.
@@ -449,10 +458,16 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
         }
     }
 
+    /**
+     * Sets the primary image for the contact photo.
+     *
+     * @param image The drawable to set.
+     * @param isVisible Whether the contact photo should be visible after being set.
+     */
     @Override
-    public void setPrimaryImage(Drawable image) {
+    public void setPrimaryImage(Drawable image, boolean isVisible) {
         if (image != null) {
-            setDrawableToImageView(mPhoto, image);
+            setDrawableToImageView(mPhoto, image, isVisible);
         }
     }
 
@@ -480,9 +495,21 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
 
     }
 
+    /**
+     * Sets the primary caller information.
+     *
+     * @param number The caller phone number.
+     * @param name The caller name.
+     * @param nameIsNumber {@code true} if the name should be shown in place of the phone number.
+     * @param label The label.
+     * @param photo The contact photo drawable.
+     * @param isSipCall {@code true} if this is a SIP call.
+     * @param isContactPhotoShown {@code true} if the contact photo should be shown (it will be
+     *      updated even if it is not shown).
+     */
     @Override
     public void setPrimary(String number, String name, boolean nameIsNumber, String label,
-            Drawable photo, boolean isSipCall) {
+            Drawable photo, boolean isSipCall, boolean isContactPhotoShown) {
         Log.d(this, "Setting primary call");
         // set the name field.
         setPrimaryName(name, nameIsNumber);
@@ -502,20 +529,21 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
 
         showInternetCallLabel(isSipCall);
 
-        setDrawableToImageView(mPhoto, photo);
+        setDrawableToImageView(mPhoto, photo, isContactPhotoShown);
     }
 
     @Override
     public void setSecondary(boolean show, String name, boolean nameIsNumber, String label,
-            String providerLabel, boolean isConference, boolean isVideoCall) {
-
-        if (show != mSecondaryCallInfo.isShown()) {
-            updateFabPositionForSecondaryCallInfo();
-        }
+            String providerLabel, boolean isConference, boolean isVideoCall, boolean isFullscreen) {
 
         if (show) {
+            mHasSecondaryCallInfo = true;
             boolean hasProvider = !TextUtils.isEmpty(providerLabel);
-            showAndInitializeSecondaryCallInfo(hasProvider);
+            initializeSecondaryCallInfo(hasProvider);
+
+            // Do not show the secondary caller info in fullscreen mode, but ensure it is populated
+            // in case fullscreen mode is exited in the future.
+            setSecondaryInfoVisible(!isFullscreen);
 
             mSecondaryCallConferenceCallIcon.setVisibility(isConference ? View.VISIBLE : View.GONE);
             mSecondaryCallVideoCallIcon.setVisibility(isVideoCall ? View.VISIBLE : View.GONE);
@@ -533,8 +561,93 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
             }
             mSecondaryCallName.setTextDirection(nameDirection);
         } else {
-            mSecondaryCallInfo.setVisibility(View.GONE);
+            mHasSecondaryCallInfo = false;
+            setSecondaryInfoVisible(false);
         }
+    }
+
+    /**
+     * Sets the visibility of the secondary caller info box.  Note, if the {@code visible} parameter
+     * is passed in {@code true}, and there is no secondary caller info populated (as determined by
+     * {@code mHasSecondaryCallInfo}, the secondary caller info box will not be shown.
+     *
+     * @param visible {@code true} if the secondary caller info should be shown, {@code false}
+     *      otherwise.
+     */
+    @Override
+    public void setSecondaryInfoVisible(final boolean visible) {
+        boolean wasVisible = mSecondaryCallInfo.isShown();
+        final boolean isVisible = visible && mHasSecondaryCallInfo;
+        Log.v(this, "setSecondaryInfoVisible: wasVisible = " + wasVisible + " isVisible = "
+                + isVisible);
+
+        // If we are showing the secondary info, we need to show it before animating so that its
+        // height will be determined on layout.
+        if (isVisible) {
+            mSecondaryCallInfo.setVisibility(View.VISIBLE);
+        }
+
+        // If secondary info visibility hasn't changed, don't animate. Return.
+        if (wasVisible == isVisible) {
+            return;
+        }
+
+        // We need to translate the secondary caller info, but we need to know its position after
+        // the layout has occurred so use a {@code ViewTreeObserver}.
+        final ViewTreeObserver observer = getView().getViewTreeObserver();
+
+        observer.addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
+            @Override
+            public boolean onPreDraw() {
+                // We don't want to continue getting called.
+                getView().getViewTreeObserver().removeOnPreDrawListener(this);
+
+                // Get the height of the secondary call info now, and then re-hide the view prior
+                // to doing the actual animation.
+                int secondaryHeight = mSecondaryCallInfo.getHeight();
+
+                // Update floating end call button position onPreDraw
+                updateFabPositionForSecondaryCallInfo();
+
+                if (isVisible) {
+                    mSecondaryCallInfo.setVisibility(View.GONE);
+                }
+                Log.v(this, "setSecondaryInfoVisible: secondaryHeight = " + secondaryHeight);
+
+                // Set the position of the secondary call info card to its starting location.
+                mSecondaryCallInfo.setTranslationY(visible ? secondaryHeight : 0);
+
+                // Animate the secondary card info slide up/down as it appears and disappears.
+                ViewPropertyAnimator secondaryInfoAnimator = mSecondaryCallInfo.animate()
+                        .setInterpolator(AnimUtils.EASE_OUT_EASE_IN)
+                        .setDuration(mVideoAnimationDuration)
+                        .translationY(isVisible ? 0 : secondaryHeight)
+                        .setListener(new AnimatorListenerAdapter() {
+                            @Override
+                            public void onAnimationEnd(Animator animation) {
+                                if (!isVisible) {
+                                    mSecondaryCallInfo.setVisibility(View.GONE);
+                                }
+                            }
+
+                            @Override
+                            public void onAnimationStart(Animator animation) {
+                                if (isVisible) {
+                                    mSecondaryCallInfo.setVisibility(View.VISIBLE);
+                                }
+                            }
+                        });
+                secondaryInfoAnimator.start();
+
+                // Notify listeners of a change in the visibility of the secondary info. This is
+                // important when in a video call so that the video call presenter can shift the
+                // video preview up or down to accommodate the secondary caller info.
+                InCallPresenter.getInstance().notifySecondaryCallerInfoVisibilityChanged(visible,
+                        secondaryHeight);
+
+                return true;
+            }
+        });
     }
 
     @Override
@@ -557,6 +670,12 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
         Log.v(this, "AutoDismiss " + callStateLabel.isAutoDismissing());
         Log.v(this, "DisconnectCause " + disconnectCause.toString());
         Log.v(this, "gateway " + connectionLabel + gatewayNumber);
+
+        // Check for video state change and update the visibility of the contact photo.  The contact
+        // photo is hidden when the incoming video surface is shown.
+        // The contact photo visibility can also change in setPrimary().
+        boolean showContactPhoto = !VideoCallPresenter.showIncomingVideo(videoState, state);
+        mPhoto.setVisibility(showContactPhoto ? View.VISIBLE : View.GONE);
 
         // Check if the call subject is showing -- if it is, we want to bypass showing the call
         // state.
@@ -743,7 +862,7 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
         }
     }
 
-    private void setDrawableToImageView(ImageView view, Drawable photo) {
+    private void setDrawableToImageView(ImageView view, Drawable photo, boolean isVisible) {
         if (photo == null) {
             photo = ContactInfoCache.getInstance(
                     view.getContext()).getDefaultContactPhotoDrawable();
@@ -757,13 +876,15 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
         final Drawable current = view.getDrawable();
         if (current == null) {
             view.setImageDrawable(photo);
-            AnimUtils.fadeIn(mElapsedTime, AnimUtils.DEFAULT_DURATION);
+            if (isVisible) {
+                AnimUtils.fadeIn(mElapsedTime, AnimUtils.DEFAULT_DURATION);
+            }
         } else {
             // Cross fading is buggy and not noticable due to the multiple calls to this method
             // that switch drawables in the middle of the cross-fade animations. Just set the
             // photo directly instead.
             view.setImageDrawable(photo);
-            view.setVisibility(View.VISIBLE);
+            view.setVisibility(isVisible ? View.VISIBLE : View.GONE);
         }
     }
 
@@ -796,9 +917,7 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
             case Call.State.ACTIVE:
                 // We normally don't show a "call state label" at all in this state
                 // (but we can use the call state label to display the provider name).
-                if ((isAccount || isWifi || isConference) && hasSuggestedLabel) {
-                    callStateLabel = label;
-                } else if (sessionModificationState
+                if (sessionModificationState
                         == Call.SessionModificationState.REQUEST_REJECTED) {
                     callStateLabel = context.getString(R.string.card_title_video_call_rejected);
                     isAutoDismissing = true;
@@ -814,6 +933,11 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
                     callStateLabel = context.getString(R.string.card_title_video_call_requesting);
                 } else if (CallUtils.isVideoCall(videoState)) {
                     callStateLabel = context.getString(R.string.card_title_video_call);
+                }
+
+                if ((isAccount || isWifi || isConference) && hasSuggestedLabel) {
+                   label += (callStateLabel != null) ? (" " + callStateLabel) : "";
+                   callStateLabel = label;
                 }
                 break;
             case Call.State.ONHOLD:
@@ -857,6 +981,13 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
                 if (TextUtils.isEmpty(callStateLabel)) {
                     callStateLabel = context.getString(R.string.card_title_call_ended);
                 }
+                if (context.getResources().getBoolean(R.bool.def_incallui_clearcode_enabled)) {
+                    String clearText = disconnectCause.getDescription() == null ? ""
+                            : disconnectCause.getDescription().toString();
+                    if (!TextUtils.isEmpty(clearText)) {
+                        Toast.makeText(context, clearText, Toast.LENGTH_SHORT).show();
+                    }
+                }
                 break;
             case Call.State.CONFERENCED:
                 callStateLabel = context.getString(R.string.card_title_conf_call);
@@ -867,9 +998,7 @@ public class CallCardFragment extends BaseFragment<CallCardPresenter, CallCardPr
         return new CallStateLabel(callStateLabel, isAutoDismissing);
     }
 
-    private void showAndInitializeSecondaryCallInfo(boolean hasProvider) {
-        mSecondaryCallInfo.setVisibility(View.VISIBLE);
-
+    private void initializeSecondaryCallInfo(boolean hasProvider) {
         // mSecondaryCallName is initialized here (vs. onViewCreated) because it is inaccessible
         // until mSecondaryCallInfo is inflated in the call above.
         if (mSecondaryCallName == null) {

@@ -22,6 +22,8 @@ import android.content.Context;
 import android.os.Bundle;
 import android.telecom.CallAudioState;
 import android.telecom.InCallService.VideoCall;
+import android.telecom.PhoneAccount;
+import android.telecom.PhoneAccountHandle;
 import android.telecom.VideoProfile;
 
 import com.android.incallui.AudioModeProvider.AudioModeListener;
@@ -33,13 +35,14 @@ import com.android.incallui.InCallPresenter.IncomingCallListener;
 import com.android.incallui.InCallPresenter.InCallDetailsListener;
 
 import java.util.Objects;
+import org.codeaurora.QtiVideoCallConstants;
 
 /**
  * Logic for call buttons.
  */
 public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButtonUi>
         implements InCallStateListener, AudioModeListener, IncomingCallListener,
-        InCallDetailsListener, CanAddCallListener, Listener {
+        InCallDetailsListener, CanAddCallListener, CallList.ActiveSubChangeListener, Listener {
 
     private static final String KEY_AUTOMATICALLY_MUTED = "incall_key_automatically_muted";
     private static final String KEY_PREVIOUS_MUTE_STATE = "incall_key_previous_mute_state";
@@ -64,6 +67,7 @@ public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButto
         inCallPresenter.addDetailsListener(this);
         inCallPresenter.addCanAddCallListener(this);
         inCallPresenter.getInCallCameraManager().addCameraSelectionListener(this);
+        CallList.getInstance().addActiveSubChangeListener(this);
 
         // Update the buttons state immediately for the current call
         onStateChange(InCallState.NO_CALLS, inCallPresenter.getInCallState(),
@@ -80,6 +84,7 @@ public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButto
         InCallPresenter.getInstance().removeDetailsListener(this);
         InCallPresenter.getInstance().getInCallCameraManager().removeCameraSelectionListener(this);
         InCallPresenter.getInstance().removeCanAddCallListener(this);
+        CallList.getInstance().removeActiveSubChangeListener(this);
     }
 
     @Override
@@ -233,6 +238,11 @@ public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButto
 
     public void mergeClicked() {
         TelecomAdapter.getInstance().merge(mCall.getId());
+        InCallAudioManager.getInstance().onMergeClicked();
+    }
+
+    public void addParticipantClicked() {
+        InCallPresenter.getInstance().sendAddParticipantIntent();
     }
 
     public void addCallClicked() {
@@ -261,6 +271,12 @@ public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButto
     }
 
     public void changeToVideoClicked() {
+        final Context context = getUi().getContext();
+        if (QtiCallUtils.useExt(context)) {
+            QtiCallUtils.displayModifyCallOptions(mCall, context);
+            return;
+        }
+
         VideoCall videoCall = mCall.getVideoCall();
         if (videoCall == null) {
             return;
@@ -369,14 +385,19 @@ public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButto
                 && call.can(android.telecom.Call.Details.CAPABILITY_HOLD);
         final boolean isCallOnHold = call.getState() == Call.State.ONHOLD;
 
+        final boolean useExt = QtiCallUtils.useExt(ui.getContext());
         final boolean showAddCall = TelecomAdapter.getInstance().canAddCall();
         final boolean showMerge = call.can(
                 android.telecom.Call.Details.CAPABILITY_MERGE_CONFERENCE);
-        final boolean showUpgradeToVideo = !isVideo &&
-                (call.can(android.telecom.Call.Details.CAPABILITY_SUPPORTS_VT_LOCAL_TX)
-                && call.can(android.telecom.Call.Details.CAPABILITY_SUPPORTS_VT_REMOTE_RX));
+        final int callState = call.getState();
+        final boolean showUpgradeToVideo = (!isVideo || useExt) &&
+                (QtiCallUtils.hasVideoCapabilities(call) ||
+                QtiCallUtils.hasVoiceCapabilities(call)) &&
+                (callState == Call.State.ACTIVE || callState == Call.State.ONHOLD);
 
         final boolean showMute = call.can(android.telecom.Call.Details.CAPABILITY_MUTE);
+        final boolean showAddParticipant = call.can(
+                QtiVideoCallConstants.CAPABILITY_ADD_PARTICIPANT);
 
         ui.showButton(BUTTON_AUDIO, true);
         ui.showButton(BUTTON_SWAP, showSwap);
@@ -386,9 +407,10 @@ public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButto
         ui.showButton(BUTTON_ADD_CALL, showAddCall);
         ui.showButton(BUTTON_UPGRADE_TO_VIDEO, showUpgradeToVideo);
         ui.showButton(BUTTON_SWITCH_CAMERA, isVideo);
-        ui.showButton(BUTTON_PAUSE_VIDEO, isVideo);
-        ui.showButton(BUTTON_DIALPAD, !isVideo);
+        ui.showButton(BUTTON_PAUSE_VIDEO, isVideo && !useExt);
+        ui.showButton(BUTTON_DIALPAD, !isVideo || useExt);
         ui.showButton(BUTTON_MERGE, showMerge);
+        ui.showButton(BUTTON_ADD_PARTICIPANT, showAddParticipant);
 
         ui.updateButtonStates();
     }
@@ -448,5 +470,12 @@ public class CallButtonPresenter extends Presenter<CallButtonPresenter.CallButto
             return;
         }
         getUi().setCameraSwitched(!isUsingFrontFacingCamera);
+    }
+
+    public void onActiveSubChanged(int subId) {
+        InCallState state = InCallPresenter.getInstance()
+                .getPotentialStateFromCallList(CallList.getInstance());
+
+        onStateChange(null, state, CallList.getInstance());
     }
 }

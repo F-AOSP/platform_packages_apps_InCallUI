@@ -27,6 +27,7 @@ import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.telecom.Call.Details;
+import android.os.SystemClock;
 import android.telecom.DisconnectCause;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
@@ -76,6 +77,8 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
     private CallTimer mCallTimer;
     private Context mContext;
     private boolean mSpinnerShowing = false;
+    private boolean mIsFullscreen = false;
+    private long mBaseChronometerTime = 0;
     private boolean mHasShownToast = false;
 
     public static class ContactLookupCallback implements ContactInfoCacheCallback {
@@ -232,6 +235,9 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
                 ui.isCallSubjectVisible() != shouldShowCallSubject) {
             // primary call has changed
             if (previousPrimary != null) {
+                //clear progess spinner (if any) related to previous primary call
+                maybeShowProgressSpinner(previousPrimary.getState(),
+                        Call.SessionModificationState.NO_REQUEST);
                 CallList.getInstance().removeCallUpdateListener(previousPrimary.getId(), this);
             }
             CallList.getInstance().addCallUpdateListener(mPrimary.getId(), this);
@@ -240,10 +246,13 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
                     mPrimary.getState() == Call.State.INCOMING);
             updatePrimaryDisplayInfo();
             maybeStartSearch(mPrimary, true);
-            mPrimary.setSessionModificationState(Call.SessionModificationState.NO_REQUEST);
+            maybeClearSessionModificationState(mPrimary);
         }
 
         if (previousPrimary != null && mPrimary == null) {
+            //clear progess spinner (if any) related to previous primary call
+            maybeShowProgressSpinner(previousPrimary.getState(),
+                    Call.SessionModificationState.NO_REQUEST);
             CallList.getInstance().removeCallUpdateListener(previousPrimary.getId(), this);
         }
 
@@ -257,16 +266,19 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
                     mSecondary.getState() == Call.State.INCOMING);
             updateSecondaryDisplayInfo();
             maybeStartSearch(mSecondary, false);
-            mSecondary.setSessionModificationState(Call.SessionModificationState.NO_REQUEST);
+            maybeClearSessionModificationState(mSecondary);
         }
 
         // Start/stop timers.
         if (isPrimaryCallActive()) {
             Log.d(this, "Starting the calltime timer");
+            mBaseChronometerTime = mPrimary.getConnectTimeMillis() - System.currentTimeMillis()
+                    + SystemClock.elapsedRealtime();
             mCallTimer.start(CALL_TIME_UPDATE_INTERVAL_MS);
         } else {
             Log.d(this, "Canceling the calltime timer");
             mCallTimer.cancel();
+            mBaseChronometerTime = 0;
             ui.setPrimaryCallElapsedTime(false, 0);
         }
 
@@ -439,8 +451,7 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
             return false;
         }
 
-        return mPrimary.can(android.telecom.Call.Details.CAPABILITY_MANAGE_CONFERENCE)
-                && !mPrimary.isVideoCall(mContext);
+        return mPrimary.can(android.telecom.Call.Details.CAPABILITY_MANAGE_CONFERENCE);
     }
 
     private void setCallbackNumber() {
@@ -483,9 +494,9 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
         } else if (!isPrimaryCallActive()) {
             ui.setPrimaryCallElapsedTime(false, 0);
             mCallTimer.cancel();
-        } else {
-            final long callStart = mPrimary.getConnectTimeMillis();
-            final long duration = System.currentTimeMillis() - callStart;
+            mBaseChronometerTime = 0;
+        } else if (mBaseChronometerTime > 0) {
+            final long duration = SystemClock.elapsedRealtime() - mBaseChronometerTime;
             ui.setPrimaryCallElapsedTime(true, duration);
         }
     }
@@ -512,6 +523,13 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
         // no need to start search for conference calls which show generic info.
         if (call != null && !call.isConferenceCall()) {
             startContactInfoSearch(call, isPrimary, call.getState() == Call.State.INCOMING);
+        }
+    }
+
+    private void maybeClearSessionModificationState(Call call) {
+        if (call.getSessionModificationState() !=
+                Call.SessionModificationState.RECEIVED_UPGRADE_TO_VIDEO_REQUEST) {
+            call.setSessionModificationState(Call.SessionModificationState.NO_REQUEST);
         }
     }
 
@@ -550,7 +568,9 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
 
         if (entry.photo != null) {
             if (mPrimary != null && callId.equals(mPrimary.getId())) {
-                getUi().setPrimaryImage(entry.photo);
+                boolean showContactPhoto = !VideoCallPresenter.showIncomingVideo(
+                        mPrimary.getVideoState(), mPrimary.getState());
+                getUi().setPrimaryImage(entry.photo, showContactPhoto);
             }
         }
     }
@@ -574,7 +594,6 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
      * @param ignore A call to ignore if found.
      */
     private Call getCallToDisplay(CallList callList, Call ignore, boolean skipDisconnected) {
-
         // Active calls come second.  An active call always gets precedent.
         Call retval = callList.getActiveCall();
         if (retval != null && retval != ignore) {
@@ -618,9 +637,14 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
 
         if (mPrimary == null) {
             // Clear the primary display info.
-            ui.setPrimary(null, null, false, null, null, false);
+            ui.setPrimary(null, null, false, null, null, false, false);
             return;
         }
+
+        // Hide the contact photo if we are in a video call and the incoming video surface is
+        // showing.
+        boolean showContactPhoto = !VideoCallPresenter
+                .showIncomingVideo(mPrimary.getVideoState(), mPrimary.getState());
 
         if (mPrimary.isConferenceCall()) {
             Log.d(TAG, "Update primary display info for conference call.");
@@ -631,7 +655,8 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
                     false /* nameIsNumber */,
                     null /* label */,
                     getConferencePhoto(mPrimary),
-                    false /* isSipCall */);
+                    false /* isSipCall */,
+                    showContactPhoto);
         } else if (mPrimaryContactInfo != null) {
             Log.d(TAG, "Update primary display info for " + mPrimaryContactInfo);
 
@@ -669,10 +694,11 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
                     nameIsNumber,
                     isChildNumberShown || isCallSubjectShown ? null : mPrimaryContactInfo.label,
                     mPrimaryContactInfo.photo,
-                    mPrimaryContactInfo.isSipCall);
+                    mPrimaryContactInfo.isSipCall,
+                    showContactPhoto);
         } else {
             // Clear the primary display info.
-            ui.setPrimary(null, null, false, null, null, false);
+            ui.setPrimary(null, null, false, null, null, false, false);
         }
 
         if (mEmergencyCallListener != null) {
@@ -690,7 +716,7 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
         if (mSecondary == null) {
             // Clear the secondary display info.
             ui.setSecondary(false, null, false, null, null, false /* isConference */,
-                    false /* isVideoCall */);
+                    false /* isVideoCall */, mIsFullscreen);
             return;
         }
 
@@ -702,7 +728,8 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
                     null /* label */,
                     getCallProviderLabel(mSecondary),
                     true /* isConference */,
-                    mSecondary.isVideoCall(mContext));
+                    mSecondary.isVideoCall(mContext),
+                    mIsFullscreen);
         } else if (mSecondaryContactInfo != null) {
             Log.d(TAG, "updateSecondaryDisplayInfo() " + mSecondaryContactInfo);
             String name = getNameForCall(mSecondaryContactInfo);
@@ -714,11 +741,12 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
                     mSecondaryContactInfo.label,
                     getCallProviderLabel(mSecondary),
                     false /* isConference */,
-                    mSecondary.isVideoCall(mContext));
+                    mSecondary.isVideoCall(mContext),
+                    mIsFullscreen);
         } else {
             // Clear the secondary display info.
             ui.setSecondary(false, null, false, null, null, false /* isConference */,
-                    false /* isVideoCall */);
+                    false /* isVideoCall */, mIsFullscreen);
         }
     }
 
@@ -863,11 +891,18 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
      */
     @Override
     public void onFullscreenModeChanged(boolean isFullscreenMode) {
+        mIsFullscreen = isFullscreenMode;
         final CallCardUi ui = getUi();
         if (ui == null) {
             return;
         }
         ui.setCallCardVisible(!isFullscreenMode);
+        ui.setSecondaryInfoVisible(!isFullscreenMode);
+    }
+
+    @Override
+    public void onSecondaryCallerInfoVisibilityChanged(boolean isVisible, int height) {
+        // No-op - the Call Card is the origin of this event.
     }
 
     private boolean isPrimaryCallActive() {
@@ -964,16 +999,18 @@ public class CallCardPresenter extends Presenter<CallCardPresenter.CallCardUi>
         void setVisible(boolean on);
         void setCallCardVisible(boolean visible);
         void setPrimary(String number, String name, boolean nameIsNumber, String label,
-                Drawable photo, boolean isSipCall);
+                Drawable photo, boolean isSipCall, boolean isContactPhotoShown);
         void setSecondary(boolean show, String name, boolean nameIsNumber, String label,
-                String providerLabel, boolean isConference, boolean isVideoCall);
+                String providerLabel, boolean isConference, boolean isVideoCall,
+                boolean isFullscreen);
+        void setSecondaryInfoVisible(boolean visible);
         void setCallState(int state, int videoState, int sessionModificationState,
                 DisconnectCause disconnectCause, String connectionLabel,
                 Drawable connectionIcon, String gatewayNumber, boolean isWifi,
                 boolean isConference);
         void setPrimaryCallElapsedTime(boolean show, long duration);
         void setPrimaryName(String name, boolean nameIsNumber);
-        void setPrimaryImage(Drawable image);
+        void setPrimaryImage(Drawable image, boolean isVisible);
         void setPrimaryPhoneNumber(String phoneNumber);
         void setPrimaryLabel(String label);
         void setEndCallButtonEnabled(boolean enabled, boolean animate);

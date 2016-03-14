@@ -31,6 +31,7 @@ import android.view.ViewTreeObserver;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 
+import com.android.phone.common.animation.AnimUtils;
 import com.google.common.base.Objects;
 
 /**
@@ -104,6 +105,8 @@ public class VideoCallFragment extends BaseFragment<VideoCallPresenter,
      * {@code True} if in landscape mode.
      */
     private boolean mIsLandscape;
+
+    private int mAnimationDuration;
 
     /**
      * Inner-class representing a {@link TextureView} and its associated {@link SurfaceTexture} and
@@ -368,9 +371,10 @@ public class VideoCallFragment extends BaseFragment<VideoCallPresenter,
             mWidth = width;
             mHeight = height;
 
-            if (mSavedSurfaceTexture != null) {
+            if (width != DIMENSIONS_NOT_SET && height != DIMENSIONS_NOT_SET
+                    && mSavedSurfaceTexture != null) {
                 Log.d(this, "setSurfaceDimensions, mSavedSurfaceTexture is NOT equal to null.");
-                createSurface(width, height);
+                mSavedSurfaceTexture.setDefaultBufferSize(width, height);
             }
         }
 
@@ -419,6 +423,8 @@ public class VideoCallFragment extends BaseFragment<VideoCallPresenter,
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        mAnimationDuration = getResources().getInteger(R.integer.video_animation_duration);
     }
 
     /**
@@ -428,12 +434,11 @@ public class VideoCallFragment extends BaseFragment<VideoCallPresenter,
      */
     @Override
     public void onActivityCreated(Bundle savedInstanceState) {
-        super.onActivityCreated(savedInstanceState);
-
         mIsLandscape = getResources().getBoolean(R.bool.is_layout_landscape);
-
         Log.d(this, "onActivityCreated: IsLandscape=" + mIsLandscape);
         getPresenter().init(getActivity());
+
+        super.onActivityCreated(savedInstanceState);
     }
 
     @Override
@@ -473,13 +478,6 @@ public class VideoCallFragment extends BaseFragment<VideoCallPresenter,
         Log.d(this, "onViewCreated: VideoSurfacesInUse=" + sVideoSurfacesInUse);
 
         mVideoViewsStub = (ViewStub) view.findViewById(R.id.videoCallViewsStub);
-
-        // If the surfaces are already in use, we have just changed orientation or otherwise
-        // re-created the fragment.  In this case we need to inflate the video call views and
-        // restore the surfaces.
-        if (sVideoSurfacesInUse) {
-            inflateVideoCallViews();
-        }
     }
 
     @Override
@@ -588,6 +586,30 @@ public class VideoCallFragment extends BaseFragment<VideoCallPresenter,
         return mPreviewPhoto;
     }
 
+    /**
+     * Adjusts the location of the video preview view by the specified offset.
+     *
+     * @param shiftUp {@code true} if the preview should shift up, {@code false} if it should shift
+     *      down.
+     * @param offset The offset.
+     */
+    @Override
+    public void adjustPreviewLocation(boolean shiftUp, int offset) {
+        if (sPreviewSurface == null || mPreviewVideoContainer == null) {
+            return;
+        }
+
+        // Set the position of the secondary call info card to its starting location.
+        mPreviewVideoContainer.setTranslationY(shiftUp ? 0 : -offset);
+
+        // Animate the secondary card info slide up/down as it appears and disappears.
+        mPreviewVideoContainer.animate()
+                .setInterpolator(AnimUtils.EASE_OUT_EASE_IN)
+                .setDuration(mAnimationDuration)
+                .translationY(shiftUp ? -offset : 0)
+                .start();
+    }
+
     private void onPresenterChanged(VideoCallPresenter presenter) {
         Log.d(this, "onPresenterChanged: Presenter=" + presenter);
         if (sDisplaySurface != null) {
@@ -672,6 +694,27 @@ public class VideoCallFragment extends BaseFragment<VideoCallPresenter,
             Matrix transform = new Matrix();
             transform.setScale(-1, 1, width/2, 0);
             preview.setTransform(transform);
+        }
+    }
+
+    /**
+     * Sets the rotation of the preview surface.  Called when the dimensions change due to a
+     * device orientation change.
+     *
+     * Please note that the screen orientation passed in is subtracted from 360 to get the actual
+     * preview rotation values.
+     *
+     * @param rotation The screen orientation. One of -
+     * {@link InCallOrientationEventListener#SCREEN_ORIENTATION_0},
+     * {@link InCallOrientationEventListener#SCREEN_ORIENTATION_90},
+     * {@link InCallOrientationEventListener#SCREEN_ORIENTATION_180},
+     * {@link InCallOrientationEventListener#SCREEN_ORIENTATION_270}).
+     */
+    @Override
+    public void setPreviewRotation(int orientation) {
+        Log.d(this, "setPreviewRotation: orientation=" + orientation);
+        if (mPreviewVideoContainer != null) {
+            mPreviewVideoContainer.setRotation(orientation);
         }
     }
 
@@ -768,7 +811,11 @@ public class VideoCallFragment extends BaseFragment<VideoCallPresenter,
 
             Log.d(this, "inflateVideoCallViews: sVideoSurfacesInUse=" + sVideoSurfacesInUse);
             //If peer adjusted screen size is not available, set screen size to default display size
-            Point screenSize = sDisplaySize == null ? getScreenSize() : sDisplaySize;
+            Point screenSize = getScreenSize();
+            if (sDisplaySize != null) {
+                screenSize = VideoCallPresenter.resizeForAspectRatio(screenSize,
+                        sDisplaySize.x, sDisplaySize.y);
+            }
             setSurfaceSizeAndTranslation(displaySurface, screenSize);
 
             if (!sVideoSurfacesInUse) {

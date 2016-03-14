@@ -133,6 +133,18 @@ public class GlowPadWrapper extends GlowPadView implements GlowPadView.OnTrigger
                 mAnswerListener.onDeclineUpgradeRequest(getContext());
                 mTargetTriggered = true;
                 break;
+            case R.drawable.qti_ic_lockscreen_answer_tx_video:
+                mAnswerListener.onAnswer(VideoProfile.STATE_TX_ENABLED, getContext());
+                mTargetTriggered = true;
+                break;
+            case R.drawable.qti_ic_lockscreen_answer_rx_video:
+                mAnswerListener.onAnswer(VideoProfile.STATE_RX_ENABLED, getContext());
+                mTargetTriggered = true;
+                break;
+            case R.drawable.qti_ic_lockscreen_deflect:
+                mAnswerListener.onDeflect(getContext());
+                mTargetTriggered = true;
+                break;
             default:
                 // Code should never reach here.
                 Log.e(this, "Trigger detected on unhandled resource. Skipping.");
@@ -167,5 +179,6 @@ public class GlowPadWrapper extends GlowPadView implements GlowPadView.OnTrigger
         void onDecline(Context context);
         void onDeclineUpgradeRequest(Context context);
         void onText();
+        void onDeflect(Context context);
     }
 }

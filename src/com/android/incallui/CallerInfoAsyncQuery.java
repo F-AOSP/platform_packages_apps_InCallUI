@@ -24,6 +24,7 @@ import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
+import android.os.SystemProperties;
 import android.provider.ContactsContract;
 import android.provider.ContactsContract.PhoneLookup;
 import android.telephony.PhoneNumberUtils;
@@ -249,7 +250,15 @@ public class CallerInfoAsyncQuery {
                     if (cw.event == EVENT_EMERGENCY_NUMBER) {
                         // Note we're setting the phone number here (refer to javadoc
                         // comments at the top of CallerInfo class).
-                        mCallerInfo = new CallerInfo().markAsEmergency(mQueryContext);
+                        if (mQueryContext.getResources().getBoolean(R.bool.mark_emergency_call) ||
+                                "cmcc".equals(SystemProperties.get("persist.carrier.mode"))) {
+                            Log.d(this, "Emergency Number and Mark Emergency Number enabled");
+                            mCallerInfo = new CallerInfo().markAsEmergency(mQueryContext,
+                                                                            cw.number);
+                        } else {
+                            Log.d(this, "Emergency Number and Mark Emergency Number disabled");
+                            mCallerInfo = new CallerInfo().markAsEmergency(mQueryContext);
+                        }
                     } else if (cw.event == EVENT_VOICEMAIL_NUMBER) {
                         mCallerInfo = new CallerInfo().markAsVoiceMail(mQueryContext);
                     } else {
@@ -263,6 +272,11 @@ public class CallerInfoAsyncQuery {
                             Log.d(this, "#####async contact look up with numeric username"
                                     + mCallerInfo);
                         }
+
+                       // If caller info name not found in contacts callerInfoContactSearch
+                       // is true to continue search for fdn or sdn
+                        if (TextUtils.isEmpty(mCallerInfo.name))
+                            mCallerInfo.callerInfoContactSearch = true;
 
                         // Final step: look up the geocoded description.
                         if (ENABLE_UNKNOWN_NUMBER_GEO_DESCRIPTION) {

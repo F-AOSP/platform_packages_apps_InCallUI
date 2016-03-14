@@ -17,6 +17,8 @@
 package com.android.incallui;
 
 import android.app.ActionBar;
+import android.app.FragmentTransaction;
+import android.app.ActionBar.Tab;
 import android.app.Activity;
 import android.app.ActivityManager;
 import android.app.AlertDialog;
@@ -30,6 +32,7 @@ import android.content.DialogInterface.OnClickListener;
 import android.content.DialogInterface.OnCancelListener;
 import android.content.Intent;
 import android.content.res.Configuration;
+import android.content.res.TypedArray;
 import android.graphics.Point;
 import android.hardware.SensorManager;
 import android.os.Bundle;
@@ -48,6 +51,8 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
+import android.widget.ImageView;
+import android.widget.TextView;
 
 import com.android.phone.common.animation.AnimUtils;
 import com.android.phone.common.animation.AnimationListenerAdapter;
@@ -77,6 +82,10 @@ public class InCallActivity extends Activity implements FragmentDisplayManager {
     private static final String TAG_ANSWER_FRAGMENT = "tag_answer_fragment";
     private static final String TAG_SELECT_ACCT_FRAGMENT = "tag_select_acct_fragment";
 
+    private static final int DIALPAD_REQUEST_NONE = 1;
+    private static final int DIALPAD_REQUEST_SHOW = 2;
+    private static final int DIALPAD_REQUEST_HIDE = 3;
+
     private CallButtonFragment mCallButtonFragment;
     private CallCardFragment mCallCardFragment;
     private AnswerFragment mAnswerFragment;
@@ -86,9 +95,15 @@ public class InCallActivity extends Activity implements FragmentDisplayManager {
 
     private boolean mIsVisible;
     private AlertDialog mDialog;
+    private InCallOrientationEventListener mInCallOrientationEventListener;
 
-    /** Use to pass 'showDialpad' from {@link #onNewIntent} to {@link #onResume} */
-    private boolean mShowDialpadRequested;
+    /**
+     * Used to indicate whether the dialpad should be hidden or shown {@link #onResume}.
+     * {@code #DIALPAD_REQUEST_SHOW} indicates that the dialpad should be shown.
+     * {@code #DIALPAD_REQUEST_HIDE} indicates that the dialpad should be hidden.
+     * {@code #DIALPAD_REQUEST_NONE} indicates no change should be made to dialpad visibility.
+     */
+    private int mShowDialpadRequest = DIALPAD_REQUEST_NONE;
 
     /** Use to determine if the dialpad should be animated on show. */
     private boolean mAnimateDialpadOnShow;
@@ -105,6 +120,13 @@ public class InCallActivity extends Activity implements FragmentDisplayManager {
     private Animation mSlideIn;
     private Animation mSlideOut;
     private boolean mDismissKeyguard = false;
+
+    private final int TAB_COUNT_ONE = 1;
+    private final int TAB_COUNT_TWO = 2;
+    private final int TAB_POSITION_FIRST = 0;
+
+    private Tab[] mDsdaTab = new Tab[TAB_COUNT_TWO];
+    private boolean[] mDsdaTabAdd = {false, false};
 
     AnimationListenerAdapter mSlideOutListener = new AnimationListenerAdapter() {
         @Override
@@ -126,14 +148,6 @@ public class InCallActivity extends Activity implements FragmentDisplayManager {
         }
     };
 
-    /** Listener for orientation changes. */
-    private OrientationEventListener mOrientationEventListener;
-
-    /**
-     * Used to determine if a change in rotation has occurred.
-     */
-    private static int sPreviousRotation = -1;
-
     @Override
     protected void onCreate(Bundle icicle) {
         Log.d(this, "onCreate()...  this = " + this);
@@ -147,14 +161,19 @@ public class InCallActivity extends Activity implements FragmentDisplayManager {
                 | WindowManager.LayoutParams.FLAG_IGNORE_CHEEK_PRESSES;
 
         getWindow().addFlags(flags);
-
-        // Setup action bar for the conference call manager.
-        requestWindowFeature(Window.FEATURE_ACTION_BAR_OVERLAY);
-        ActionBar actionBar = getActionBar();
-        if (actionBar != null) {
-            actionBar.setDisplayHomeAsUpEnabled(true);
-            actionBar.setDisplayShowTitleEnabled(true);
-            actionBar.hide();
+        boolean isDsdaEnabled = InCallServiceImpl.isDsdaEnabled();
+        if (isDsdaEnabled) {
+            requestWindowFeature(Window.FEATURE_ACTION_BAR);
+            getActionBar().setNavigationMode(ActionBar.NAVIGATION_MODE_TABS);
+            getActionBar().setDisplayShowTitleEnabled(false);
+            getActionBar().setDisplayShowHomeEnabled(false);
+        } else {
+            requestWindowFeature(Window.FEATURE_ACTION_BAR_OVERLAY);
+            if (getActionBar() != null) {
+                getActionBar().setDisplayHomeAsUpEnabled(true);
+                getActionBar().setDisplayShowTitleEnabled(true);
+                getActionBar().hide();
+            }
         }
 
         // TODO(klp): Do we need to add this back when prox sensor is not available?
@@ -185,13 +204,24 @@ public class InCallActivity extends Activity implements FragmentDisplayManager {
 
         mSlideOut.setAnimationListener(mSlideOutListener);
 
+        // If the dialpad fragment already exists, retrieve it.  This is important when rotating as
+        // we will not be able to hide or show the dialpad after the rotation otherwise.
+        Fragment existingFragment =
+                getFragmentManager().findFragmentByTag(DialpadFragment.class.getName());
+        if (existingFragment != null) {
+            mDialpadFragment = (DialpadFragment) existingFragment;
+        }
+
         if (icicle != null) {
             // If the dialpad was shown before, set variables indicating it should be shown and
             // populated with the previous DTMF text.  The dialpad is actually shown and populated
             // in onResume() to ensure the hosting CallCardFragment has been inflated and is ready
             // to receive it.
-            mShowDialpadRequested = icicle.getBoolean(SHOW_DIALPAD_EXTRA);
-            mAnimateDialpadOnShow = false;
+            if (icicle.containsKey(SHOW_DIALPAD_EXTRA)) {
+                boolean showDialpad = icicle.getBoolean(SHOW_DIALPAD_EXTRA);
+                mShowDialpadRequest = showDialpad ? DIALPAD_REQUEST_SHOW : DIALPAD_REQUEST_HIDE;
+                mAnimateDialpadOnShow = showDialpad;
+            }
             mDtmfText = icicle.getString(DIALPAD_TEXT_EXTRA);
 
             SelectPhoneAccountDialogFragment dialogFragment = (SelectPhoneAccountDialogFragment)
@@ -201,39 +231,11 @@ public class InCallActivity extends Activity implements FragmentDisplayManager {
             }
         }
 
-        mOrientationEventListener = new OrientationEventListener(this,
-                SensorManager.SENSOR_DELAY_NORMAL) {
-            @Override
-            public void onOrientationChanged(int orientation) {
-                // Device is flat, don't change orientation.
-                if (orientation == OrientationEventListener.ORIENTATION_UNKNOWN) {
-                    return;
-                }
+        mInCallOrientationEventListener = new InCallOrientationEventListener(this);
 
-                int newRotation = Surface.ROTATION_0;
-                // We only shift if we're within 22.5 (23) degrees of the target
-                // orientation. This avoids flopping back and forth when holding
-                // the device at 45 degrees or so.
-                if (orientation >= 337 || orientation <= 23) {
-                    newRotation = Surface.ROTATION_0;
-                } else if (orientation >= 67 && orientation <= 113) {
-                    // Why not 90? Because screen and sensor orientation are
-                    // reversed.
-                    newRotation = Surface.ROTATION_270;
-                } else if (orientation >= 157 && orientation <= 203) {
-                    newRotation = Surface.ROTATION_180;
-                } else if (orientation >= 247 && orientation <= 293) {
-                    newRotation = Surface.ROTATION_90;
-                }
-
-                // Orientation is the current device orientation in degrees.  Ultimately we want
-                // the rotation (in fixed 90 degree intervals).
-                if (newRotation != sPreviousRotation) {
-                    doOrientationChanged(newRotation);
-                }
-            }
-        };
-
+        if (isDsdaEnabled ) {
+            initializeDsdaSwitchTab();
+        }
         Log.d(this, "onCreate(): exit");
     }
 
@@ -255,16 +257,10 @@ public class InCallActivity extends Activity implements FragmentDisplayManager {
 
         mIsVisible = true;
 
-        if (mOrientationEventListener.canDetectOrientation()) {
-            Log.v(this, "Orientation detection enabled.");
-            mOrientationEventListener.enable();
-        } else {
-            Log.v(this, "Orientation detection disabled.");
-            mOrientationEventListener.disable();
-        }
-
         // setting activity should be last thing in setup process
         InCallPresenter.getInstance().setActivity(this);
+        enableInCallOrientationEventListener(getRequestedOrientation() ==
+               InCallOrientationEventListener.FULL_SENSOR_SCREEN_ORIENTATION);
 
         InCallPresenter.getInstance().onActivityStarted();
     }
@@ -277,16 +273,31 @@ public class InCallActivity extends Activity implements FragmentDisplayManager {
         InCallPresenter.getInstance().setThemeColors();
         InCallPresenter.getInstance().onUiShowing(true);
 
-        if (mShowDialpadRequested) {
-            mCallButtonFragment.displayDialpad(true /* show */,
-                    mAnimateDialpadOnShow /* animate */);
-            mShowDialpadRequested = false;
-            mAnimateDialpadOnShow = false;
+        // Exit fullscreen state onResume; the stored value may not match reality.
+        InCallPresenter.getInstance().setFullScreen(false);
 
-            if (mDialpadFragment != null) {
-                mDialpadFragment.setDtmfText(mDtmfText);
-                mDtmfText = null;
+        // If there is a pending request to show or hide the dialpad, handle that now.
+        if (mShowDialpadRequest != DIALPAD_REQUEST_NONE) {
+            if (mShowDialpadRequest == DIALPAD_REQUEST_SHOW) {
+                // Exit fullscreen so that the user has access to the dialpad hide/show button and
+                // can hide the dialpad.  Important when showing the dialpad from within dialer.
+                InCallPresenter.getInstance().setFullScreen(false, true /* force */);
+
+                mCallButtonFragment.displayDialpad(true /* show */,
+                        mAnimateDialpadOnShow /* animate */);
+                mAnimateDialpadOnShow = false;
+
+                if (mDialpadFragment != null) {
+                    mDialpadFragment.setDtmfText(mDtmfText);
+                    mDtmfText = null;
+                }
+            } else {
+                Log.v(this, "onResume : force hide dialpad");
+                if (mDialpadFragment != null) {
+                    mCallButtonFragment.displayDialpad(false /* show */, false /* animate */);
+                }
             }
+            mShowDialpadRequest = DIALPAD_REQUEST_NONE;
         }
 
         if (mShowPostCharWaitDialogOnResume) {
@@ -314,9 +325,9 @@ public class InCallActivity extends Activity implements FragmentDisplayManager {
     protected void onStop() {
         Log.d(this, "onStop()...");
         mIsVisible = false;
+        enableInCallOrientationEventListener(false);
         InCallPresenter.getInstance().updateIsChangingConfigurations();
         InCallPresenter.getInstance().onActivityStopped();
-        mOrientationEventListener.disable();
         super.onStop();
     }
 
@@ -359,7 +370,8 @@ public class InCallActivity extends Activity implements FragmentDisplayManager {
     }
 
     private boolean hasPendingDialogs() {
-        return mDialog != null || (mAnswerFragment != null && mAnswerFragment.hasPendingDialogs());
+        return mDialog != null || (mAnswerFragment != null && mAnswerFragment.hasPendingDialogs())
+                || InCallCsRedialHandler.getInstance().hasPendingDialogs();
     }
 
     @Override
@@ -517,25 +529,6 @@ public class InCallActivity extends Activity implements FragmentDisplayManager {
         return false;
     }
 
-    /**
-     * Handles changes in device rotation.
-     *
-     * @param rotation The new device rotation (one of: {@link Surface#ROTATION_0},
-     *      {@link Surface#ROTATION_90}, {@link Surface#ROTATION_180},
-     *      {@link Surface#ROTATION_270}).
-     */
-    private void doOrientationChanged(int rotation) {
-        Log.d(this, "doOrientationChanged prevOrientation=" + sPreviousRotation +
-                " newOrientation=" + rotation);
-        // Check to see if the rotation changed to prevent triggering rotation change events
-        // for other configuration changes.
-        if (rotation != sPreviousRotation) {
-            sPreviousRotation = rotation;
-            InCallPresenter.getInstance().onDeviceRotationChange(rotation);
-            InCallPresenter.getInstance().onDeviceOrientationChange(sPreviousRotation);
-        }
-    }
-
     public CallButtonFragment getCallButtonFragment() {
         return mCallButtonFragment;
     }
@@ -630,16 +623,23 @@ public class InCallActivity extends Activity implements FragmentDisplayManager {
             } else if (!newOutgoingCall) {
                 showCallCardFragment(true);
             }
-
             return;
         }
     }
 
+    /**
+     * When relaunching from the dialer app, {@code showDialpad} indicates whether the dialpad
+     * should be shown on launch.
+     *
+     * @param showDialpad {@code true} to indicate the dialpad should be shown on launch, and
+     *                                {@code false} to indicate no change should be made to the
+     *                                dialpad visibility.
+     */
     private void relaunchedFromDialer(boolean showDialpad) {
-        mShowDialpadRequested = showDialpad;
+        mShowDialpadRequest = showDialpad ? DIALPAD_REQUEST_SHOW : DIALPAD_REQUEST_NONE;
         mAnimateDialpadOnShow = true;
 
-        if (mShowDialpadRequested) {
+        if (mShowDialpadRequest == DIALPAD_REQUEST_SHOW) {
             // If there's only one line in use, AND it's on hold, then we're sure the user
             // wants to use the dialpad toward the exact line, so un-hold the holding line.
             final Call call = CallList.getInstance().getActiveOrBackgroundCall();
@@ -830,6 +830,7 @@ public class InCallActivity extends Activity implements FragmentDisplayManager {
         if (mAnswerFragment != null) {
             mAnswerFragment.dismissPendingDialogs();
         }
+        InCallCsRedialHandler.getInstance().dismissPendingDialogs();
     }
 
     /**
@@ -877,6 +878,130 @@ public class InCallActivity extends Activity implements FragmentDisplayManager {
                     Log.e(TAG, "RuntimeException when excluding task from recents.", e);
                 }
             }
+        }
+    }
+
+    private void initializeDsdaSwitchTab() {
+        int phoneCount = InCallServiceImpl.sPhoneCount;
+        ActionBar bar = getActionBar();
+        View[] mDsdaTabLayout = new View[phoneCount];
+        TypedArray icons = getResources().obtainTypedArray(R.array.sim_icons);
+        int[] subString = {R.string.sub_1, R.string.sub_2};
+
+        for (int i = 0; i < phoneCount; i++) {
+            mDsdaTabLayout[i] = getLayoutInflater()
+                    .inflate(R.layout.msim_tab_sub_info, null);
+
+            ((ImageView)mDsdaTabLayout[i].findViewById(R.id.tabSubIcon))
+                    .setBackground(icons.getDrawable(i));
+
+            ((TextView)mDsdaTabLayout[i].findViewById(R.id.tabSubText))
+                    .setText(subString[i]);
+
+            mDsdaTab[i] = bar.newTab().setCustomView(mDsdaTabLayout[i])
+                    .setTabListener(new TabListener(i));
+        }
+    }
+
+    public void updateDsdaTab() {
+        int phoneCount = InCallServiceImpl.sPhoneCount;
+        ActionBar bar = getActionBar();
+
+        for (int i = 0; i < phoneCount; i++) {
+            int[] subId = CallList.getInstance().getSubId(i);
+            if (subId != null && CallList.getInstance().hasAnyLiveCall(subId[0])) {
+                if (!mDsdaTabAdd[i]) {
+                    addDsdaTab(i);
+                }
+            } else {
+                removeDsdaTab(i);
+            }
+        }
+
+        updateDsdaTabSelection();
+    }
+
+    private void addDsdaTab(int subId) {
+        ActionBar bar = getActionBar();
+        int tabCount = bar.getTabCount();
+
+        if (tabCount < subId) {
+            bar.addTab(mDsdaTab[subId], false);
+        } else {
+            bar.addTab(mDsdaTab[subId], subId, false);
+        }
+        mDsdaTabAdd[subId] = true;
+        Log.d(this, "addDsdaTab, subId = " + subId + " tab count = " + tabCount);
+    }
+
+    private void removeDsdaTab(int subId) {
+        ActionBar bar = getActionBar();
+        int tabCount = bar.getTabCount();
+
+        for (int i = 0; i < tabCount; i++) {
+            if (bar.getTabAt(i).equals(mDsdaTab[subId])) {
+                bar.removeTab(mDsdaTab[subId]);
+                mDsdaTabAdd[subId] = false;
+                return;
+            }
+        }
+        Log.d(this, "removeDsdaTab, subId = " + subId + " tab count = " + tabCount);
+    }
+
+    private void updateDsdaTabSelection() {
+        ActionBar bar = getActionBar();
+        int barCount = bar.getTabCount();
+
+        if (barCount == TAB_COUNT_ONE) {
+            bar.selectTab(bar.getTabAt(TAB_POSITION_FIRST));
+        } else if (barCount == TAB_COUNT_TWO) {
+            int phoneId = CallList.getInstance().getPhoneId(CallList
+                    .getInstance().getActiveSubId());
+            bar.selectTab(bar.getTabAt(phoneId));
+        }
+    }
+
+    private class TabListener implements ActionBar.TabListener {
+        int mPhoneId;
+
+        public TabListener(int phoneId) {
+            mPhoneId = phoneId;
+        }
+
+        public void onTabSelected(Tab tab, FragmentTransaction ft) {
+            ActionBar bar = getActionBar();
+            int tabCount = bar.getTabCount();
+                Log.d(this, "onTabSelected mPhoneId:" + mPhoneId);
+            //Don't setActiveSubscription if tab count is 1.This is to avoid
+            //setting active subscription automatically when call on one sub
+            //ends and it's corresponding tab is removed.For such cases active
+            //subscription will be set by InCallPresenter.attemptFinishActivity.
+            int[] subId = CallList.getInstance().getSubId(mPhoneId);
+            if (tabCount != TAB_COUNT_ONE && CallList.getInstance().hasAnyLiveCall(subId[0])
+                    && (CallList.getInstance().getActiveSubId() != subId[0])) {
+                Log.d(this, "Switch to other active sub: " + subId[0]);
+                TelecomAdapter.getInstance().switchToOtherActiveSub(
+                        String.valueOf(subId[0]));
+            }
+        }
+
+        public void onTabUnselected(Tab tab, FragmentTransaction ft) {
+        }
+
+        public void onTabReselected(Tab tab, FragmentTransaction ft) {
+        }
+    }
+
+     /**
+     * Enables the OrientationEventListener if enable flag is true. Disables it if enable is
+     * false
+     * @param enable true or false.
+     */
+    public void enableInCallOrientationEventListener(boolean enable) {
+        if (enable) {
+            mInCallOrientationEventListener.enable(enable);
+        } else {
+            mInCallOrientationEventListener.disable();
         }
     }
 }

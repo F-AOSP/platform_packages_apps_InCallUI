@@ -27,7 +27,8 @@ import com.google.common.base.Preconditions;
 import java.util.List;
 
 final class TelecomAdapter implements InCallServiceListener {
-    private static final String ADD_CALL_MODE_KEY = "add_call_mode";
+    public static final String ADD_CALL_MODE_KEY = "add_call_mode";
+    public static final String ADD_PARTICIPANT_KEY = "add_participant";
 
     private static TelecomAdapter sInstance;
     private InCallService mInCallService;
@@ -116,6 +117,14 @@ final class TelecomAdapter implements InCallServiceListener {
             mInCallService.setAudioRoute(route);
         } else {
             Log.e(this, "error setAudioRoute, mInCallService is null");
+        }
+    }
+
+    void switchToOtherActiveSub(String subId) {
+        if (mInCallService != null) {
+            mInCallService.switchToOtherActiveSub(subId);
+        } else {
+            Log.e(this, "error switchToOtherActiveSub, mPhone is null");
         }
     }
 
